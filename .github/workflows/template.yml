@@ -27,7 +27,7 @@ jobs:
 
       - name: The deploy says what it deployed (Agents' Lineage reads the notice)
         run: |
-          grep -qF '::notice title=deploy::cloudrun:$PROJECT/$REGION/$SERVICE/$SERVICE-${{ github.run_number }}' .github/workflows/deploy.yml
+          grep -qF '::notice title=deploy::cloudrun:$PROJECT/$REGION/$SERVICE/$SERVICE-$''{{ github.run_number }}' .github/workflows/deploy.yml
           grep -qF 'environment: production' .github/workflows/deploy.yml
           grep -qF "assertion.repository == '\$repo'" setup-gcp.sh
           grep -qxF 'repo=someone/tidelog' setup-gcp.sh
