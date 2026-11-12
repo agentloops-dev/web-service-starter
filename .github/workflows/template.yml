@@ -1,0 +1,48 @@
+# The template's own check, which a new app does not get (.starterignore): fill the
+# placeholders with sample values, as Agents does, check the deploy, install, start the
+# service and ask it /healthz.
+name: template
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  start:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Fill the placeholders with sample values
+        run: python3 .github/template/fill.py
+
+      - name: The deploy says what it deployed (Agents' Lineage reads the notice)
+        run: |
+          grep -qF '::notice title=deploy::cloudrun:$PROJECT/$REGION/$SERVICE/$SERVICE-${{ github.run_number }}' .github/workflows/deploy.yml
+          grep -qF 'environment: production' .github/workflows/deploy.yml
+          grep -qF "assertion.repository == '\$repo'" setup-gcp.sh
+          grep -qxF 'repo=someone/tidelog' setup-gcp.sh
+          grep -qxF 'pool=github' setup-gcp.sh
+          tail -n 2 setup-gcp.sh | head -n 1 | grep -q '^echo "GCP_WIF_PROVIDER='
+          tail -n 1 setup-gcp.sh | grep -q '^echo "GCP_DEPLOY_SA='
+          bash -n setup-gcp.sh
+
+      - run: npm ci
+
+      - name: Start it and ask /healthz
+        run: |
+          PORT=8080 npm start &
+          for _ in $(seq 30); do
+            if curl -fsS http://127.0.0.1:8080/healthz | grep -qx ok; then exit 0; fi
+            sleep 1
+          done
+          exit 1
