@@ -1,5 +1,7 @@
-# Deploys the service to Cloud Run on each version tag (v1.2.0). The `production` environment
-# holds it until one of its required reviewers approves it.
+# Deploys the service to Cloud Run when a person approves a version (v1.2.0) in Agent Loops:
+# release.yml asks on the tag, and Approve starts this workflow on the tag with the Deployment
+# it approved. It deploys only that Deployment, only when it is approved (status queued), and
+# says how it went in the Deployment's status. Run by hand, it refuses.
 #
 # It signs in to Google Cloud with Workload Identity Federation: no key, only two repository
 # variables, which setup-gcp.sh prints:
@@ -9,8 +11,11 @@
 name: deploy
 
 on:
-  push:
-    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      deployment:
+        description: The GitHub Deployment that was approved in Agent Loops
+        required: true
 
 permissions:
   contents: read
@@ -26,11 +31,30 @@ jobs:
   cloud-run:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: production
     permissions:
       contents: read
+      deployments: write
       id-token: write
     steps:
+      - name: The deploy was approved in Agent Loops
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOYMENT: ${{ inputs.deployment }}
+          JOB_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/job/${{ job.check_run_id }}
+        run: |
+          if [[ ! $DEPLOYMENT =~ ^[0-9]+$ ]]; then
+            echo "::error::deployment is a GitHub Deployment's id. Nothing was deployed."
+            exit 1
+          fi
+          read -r task sha environment < <(gh api "repos/$GITHUB_REPOSITORY/deployments/$DEPLOYMENT" --jq '"\(.task) \(.sha) \(.environment)"')
+          state=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$DEPLOYMENT/statuses?per_page=1" --jq '.[0].state // ""')
+          if [[ $task != deploy:approval || $sha != "$GITHUB_SHA" || $environment != production || $state != queued ]]; then
+            echo "::error::Deployment $DEPLOYMENT is not one approved in Agent Loops for this commit. Nothing was deployed."
+            exit 1
+          fi
+          echo "DEPLOYMENT=$DEPLOYMENT" >> "$GITHUB_ENV"
+          gh api "repos/$GITHUB_REPOSITORY/deployments/$DEPLOYMENT/statuses" -f state=in_progress -f log_url="$JOB_URL" > /dev/null
+
       - uses: actions/checkout@v5
 
       - name: The Google Cloud variables are there
@@ -59,8 +83,22 @@ jobs:
           gcloud run deploy "$SERVICE" --project "$PROJECT" --region "$REGION" \
             --source . --revision-suffix "${{ github.run_number }}" --allow-unauthenticated \
             --set-env-vars "SENTRY_DSN=$SENTRY_DSN,SENTRY_RELEASE=$SERVICE@${TAG#v}" --quiet
+          echo "SERVICE_URL=$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" --format 'value(status.url)')" >> "$GITHUB_ENV"
 
       # What this run deployed: cloudrun:<project>/<region>/<service>/<revision>. Agents reads the
       # notice from the run and shows the revision beside the release it came from.
       - name: Say the deploy
         run: echo "::notice title=deploy::cloudrun:$PROJECT/$REGION/$SERVICE/$SERVICE-${{ github.run_number }}"
+
+      # How the deploy went, in the Deployment's status: Agent Loops shows it in Lineage.
+      - name: Say how it went
+        if: always() && env.DEPLOYMENT != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+          JOB_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/job/${{ job.check_run_id }}
+        run: |
+          state=failure
+          [[ $JOB_STATUS == success ]] && state=success
+          gh api "repos/$GITHUB_REPOSITORY/deployments/$DEPLOYMENT/statuses" -f state="$state" -f log_url="$JOB_URL" \
+            ${SERVICE_URL:+-f environment_url="$SERVICE_URL"} > /dev/null
