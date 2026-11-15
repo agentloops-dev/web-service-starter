@@ -55,7 +55,7 @@ jobs:
           echo "DEPLOYMENT=$DEPLOYMENT" >> "$GITHUB_ENV"
           gh api "repos/$GITHUB_REPOSITORY/deployments/$DEPLOYMENT/statuses" -f state=in_progress -f log_url="$JOB_URL" > /dev/null
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: The Google Cloud variables are there
         env:
