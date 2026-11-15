@@ -1,0 +1,36 @@
+# Asks for the approval of a deploy on each version tag (v1.2.0), on any GitHub plan. It makes a
+# GitHub Deployment to `production` of the task deploy:approval, with the status pending, and
+# deploys nothing. Agent Loops shows it in Needs You. Approve starts deploy.yml on the tag;
+# Reject ends it, and nothing deploys.
+#
+# GitHub Free has an environment's required reviewers on public repositories only, so this
+# repository's deploy does not wait on them.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  deployments: write
+
+jobs:
+  ask:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ask for the approval of the deploy to production
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          ACTOR: ${{ github.triggering_actor }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          id=$(jq -n --arg ref "$TAG" --arg actor "$ACTOR" '{ref: $ref, environment: "production",
+            task: "deploy:approval", auto_merge: false, required_contexts: [], production_environment: true,
+            description: "Waits for an approval in Agent Loops", payload: {workflow: "deploy.yml", actor: $actor}}' |
+            gh api "repos/$GITHUB_REPOSITORY/deployments" --input - --jq .id)
+          gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" -f state=pending -f log_url="$RUN_URL" \
+            -f description="Waits for an approval in Agent Loops" > /dev/null
+          echo "::notice::$TAG waits for an approval in Agent Loops (Needs You): Deployment $id."
